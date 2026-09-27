@@ -1,6 +1,8 @@
-# Telegram-бот ОС АО ОЭСК (Node + PostgreSQL + Render)
+# Telegram-бот ОС АО ОЭСК (Node + Neon PostgreSQL + Render)
 
 Поиск основного средства по **инвентарному номеру**: текст + фото (если есть ссылка в таблице).
+
+**Стек:** бот на Render Free, база на [Neon](https://neon.tech) Free (без срока 30 дней Render Postgres).
 
 ## Что внутри
 
@@ -58,21 +60,25 @@ docker run --name oesk-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=oesk -p 5
 
 `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/oesk`
 
-## 4. Деплой на Render
+## 4. База данных — Neon (бесплатно)
 
-### База данных
+1. Откройте [console.neon.tech](https://console.neon.tech) → зарегистрируйтесь
+2. **Create a project** (имя например `oesk`)
+3. Скопируйте **Connection string** (URI), вида:
+   `postgresql://...@ep-xxxx.region.aws.neon.tech/neondb?sslmode=require`
+4. Вставьте её в `.env` как `DATABASE_URL` (локально) и в Render Env Vars
 
-1. [dashboard.render.com](https://dashboard.render.com) → **New** → **PostgreSQL**
-2. Имя: `oesk-db`
-3. Скопируйте **Internal Database URL** (для сервиса на Render)  
-   или **External Database URL** (для импорта с вашего компьютера)
+Локальный импорт после этого:
 
-> С марта 2025 бесплатный Postgres на Render часто недоступен — может понадобиться план **Starter** (~$7/мес).  
-> Free Web Service при этом «засыпает» без трафика (~15 мин).
+```bash
+npm run import
+```
 
-### Web Service (бот)
+## 5. Деплой бота на Render
 
-1. Залейте проект на GitHub
+Postgres на Render **не нужен**. Только Web Service.
+
+1. GitHub-репозиторий уже есть
 2. Render → **New** → **Web Service** → укажите репозиторий
 3. Настройки:
    - **Runtime:** Node
@@ -83,30 +89,30 @@ docker run --name oesk-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=oesk -p 5
 | Key | Value |
 |-----|--------|
 | `BOT_TOKEN` | токен BotFather |
-| `DATABASE_URL` | Internal Database URL из Postgres |
+| `DATABASE_URL` | Connection string из **Neon** |
 | `SHEETS_CSV_URL` | CSV-ссылка на таблицу |
 | `ALLOWED_USER_IDS` | опционально: ваши Telegram id через запятую |
 | `NODE_VERSION` | `20` |
 
 5. Deploy
 
-### Импорт данных в БД
+### Импорт данных
 
-После первого деплоя БД пустая. Импорт удобнее с компьютера (External URL):
-
-```bash
-DATABASE_URL="postgresql://...external..." SHEETS_CSV_URL="https://docs.google.com/..." npm run import
-```
-
-Либо в Render → ваш Web Service → **Shell**:
+После деплоя: Render → Web Service → **Shell**:
 
 ```bash
 npm run import
 ```
 
-Когда обновите таблицу — снова запустите `npm run import`.
+Или локально с `DATABASE_URL` из Neon:
 
-## 5. Как пользоваться
+```bash
+npm run import
+```
+
+Когда обновите таблицу — снова `npm run import`.
+
+## 6. Как пользоваться
 
 В Telegram напишите боту:
 
@@ -119,5 +125,6 @@ npm run import
 ## Важно про Free Render
 
 - Web Free **засыпает** без запросов — первое сообщение после сна может идти 30–60 сек.
-- Чтобы не спал: платный **Starter** у Web Service, либо перенос на Oracle Always Free / VPS.
+- Neon Free тоже может «засыпать» БД — обычно просыпается за 1–3 сек.
+- Чтобы бот не спал: платный Starter на Render или VPS (Oracle Always Free).
 - Код уже готов к Render: слушает `PORT` и отвечает `200` на HTTP.
