@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: oesk-inventory-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SHEETS_CSV_URL
+        sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: oesk-db
+          property: connectionString
+      - key: NODE_VERSION
+        value: "20"
+
+databases:
+  - name: oesk-db
+    plan: free
