@@ -1,9 +1,16 @@
 import 'dotenv/config';
 import http from 'node:http';
-import { Telegraf, Markup } from 'telegraf';
+import { Telegraf } from 'telegraf';
 import { pool, query } from './db.js';
 import { replyWithAsset, largestPhoto } from './assets.js';
 import { ensureSchema } from './schema.js';
+import {
+  MENU,
+  mainMenu,
+  wizardMenu,
+  notFoundActions,
+  isMenuText,
+} from './keyboards.js';
 import { getSession, setSession, clearSession } from './sessions.js';
 import { looksLikeInventoryNumber, toDirectPhotoUrl } from './utils.js';
 
@@ -19,13 +26,6 @@ const allowedIds = (process.env.ALLOWED_USER_IDS || '')
 
 const bot = new Telegraf(token);
 
-const menuKeyboard = Markup.keyboard([
-  ['🔎 Поиск', '➕ Новый номер'],
-  ['🖼 Добавить фото', '❌ Отмена'],
-])
-  .resize()
-  .persistent();
-
 function isAllowed(ctx) {
   if (allowedIds.length === 0) return true;
   const userId = String(ctx.from?.id || '');
@@ -34,16 +34,13 @@ function isAllowed(ctx) {
 
 function helpText() {
   return [
-    'Бот поиска основных средств АО ОЭСК.',
+    '📦 Бот основных средств АО ОЭСК',
     '',
-    'Команды:',
-    '/search — поиск по инвентарному номеру',
-    '/add — добавить новый инвентарный номер',
-    '/photo — привязать фото к номеру',
-    '/cancel — отменить текущий ввод',
+    'Выберите действие кнопкой ниже или:',
+    '• отправьте инвентарный номер (например 065829)',
+    '• отправьте фото с подписью = номер',
     '',
-    'Быстрый поиск: просто отправьте номер, например 065829',
-    'Быстрое фото: отправьте фото с подписью = инвентарный номер',
+    'Кнопки под карточкой: добавить фото, новый поиск, меню.',
   ].join('\n');
 }
 
@@ -56,71 +53,109 @@ bot.use(async (ctx, next) => {
 });
 
 bot.start(async (ctx) => {
-  await ctx.reply(helpText(), menuKeyboard);
+  clearSession(ctx.from.id);
+  await ctx.reply(helpText(), mainMenu());
 });
 
 bot.help(async (ctx) => {
-  await ctx.reply(helpText(), menuKeyboard);
+  await ctx.reply(helpText(), mainMenu());
 });
 
 bot.command('cancel', async (ctx) => {
   clearSession(ctx.from.id);
-  await ctx.reply('Ввод отменён.', menuKeyboard);
+  await ctx.reply('Ввод отменён.', mainMenu());
 });
 
 bot.command('skip', async (ctx) => {
-  const session = getSession(ctx.from.id);
-  if (session?.action !== 'add_wait_photo') {
-    await ctx.reply('Сейчас нечего пропускать.');
-    return;
-  }
-  const asset = await createAsset(session.draft);
-  clearSession(ctx.from.id);
-  await ctx.reply(`Создано: № ${asset.inventory_number}`, menuKeyboard);
-  await replyWithAsset(ctx, asset);
+  await handleSkip(ctx);
 });
 
-bot.hears('❌ Отмена', async (ctx) => {
+bot.hears(MENU.CANCEL, async (ctx) => {
   clearSession(ctx.from.id);
-  await ctx.reply('Ввод отменён.', menuKeyboard);
+  await ctx.reply('Ввод отменён.', mainMenu());
+});
+
+bot.hears(MENU.SKIP, async (ctx) => {
+  await handleSkip(ctx);
+});
+
+bot.hears(MENU.HELP, async (ctx) => {
+  await ctx.reply(helpText(), mainMenu());
 });
 
 bot.command('search', async (ctx) => {
-  setSession(ctx.from.id, { action: 'search_wait_number' });
-  await ctx.reply('Введите инвентарный номер:');
+  await startSearch(ctx);
 });
 
-bot.hears('🔎 Поиск', async (ctx) => {
-  setSession(ctx.from.id, { action: 'search_wait_number' });
-  await ctx.reply('Введите инвентарный номер:');
+bot.hears(MENU.SEARCH, async (ctx) => {
+  await startSearch(ctx);
 });
 
 bot.command('add', async (ctx) => {
-  setSession(ctx.from.id, { action: 'add_wait_number', draft: {} });
-  await ctx.reply(
-    'Добавление ОС.\nВведите новый инвентарный номер (только цифры):\n\n/cancel — отмена',
-  );
+  await startAdd(ctx);
 });
 
-bot.hears('➕ Новый номер', async (ctx) => {
-  setSession(ctx.from.id, { action: 'add_wait_number', draft: {} });
-  await ctx.reply(
-    'Добавление ОС.\nВведите новый инвентарный номер (только цифры):\n\n/cancel — отмена',
-  );
+bot.hears(MENU.ADD, async (ctx) => {
+  await startAdd(ctx);
 });
 
 bot.command('photo', async (ctx) => {
-  setSession(ctx.from.id, { action: 'photo_wait_number' });
-  await ctx.reply(
-    'Привязка фото.\nВведите инвентарный номер:\n\n/cancel — отмена',
-  );
+  await startPhoto(ctx);
 });
 
-bot.hears('🖼 Добавить фото', async (ctx) => {
-  setSession(ctx.from.id, { action: 'photo_wait_number' });
-  await ctx.reply(
-    'Привязка фото.\nВведите инвентарный номер:\n\n/cancel — отмена',
-  );
+bot.hears(MENU.PHOTO, async (ctx) => {
+  await startPhoto(ctx);
+});
+
+bot.on('callback_query', async (ctx) => {
+  const data = ctx.callbackQuery.data || '';
+  await ctx.answerCbQuery();
+
+  if (data === 'menu:home') {
+    clearSession(ctx.from.id);
+    await ctx.reply(helpText(), mainMenu());
+    return;
+  }
+
+  if (data === 'menu:search') {
+    await startSearch(ctx);
+    return;
+  }
+
+  if (data === 'menu:add') {
+    await startAdd(ctx);
+    return;
+  }
+
+  if (data.startsWith('photo:')) {
+    const number = data.slice('photo:'.length);
+    const asset = await findAsset(number);
+    if (!asset) {
+      await ctx.reply(`Номер ${number} не найден.`, mainMenu());
+      return;
+    }
+    setSession(ctx.from.id, {
+      action: 'photo_wait_photo',
+      inventory_number: number,
+    });
+    await ctx.reply(
+      `№ ${number}: ${asset.name}\n\nОтправьте фото или ссылку Google Drive.`,
+      wizardMenu(false),
+    );
+    return;
+  }
+
+  if (data.startsWith('addnum:')) {
+    const number = data.slice('addnum:'.length);
+    setSession(ctx.from.id, {
+      action: 'add_wait_name',
+      draft: { inventory_number: number },
+    });
+    await ctx.reply(
+      `Номер ${number} выбран.\nВведите наименование ОС:`,
+      wizardMenu(false),
+    );
+  }
 });
 
 bot.on('photo', async (ctx) => {
@@ -134,17 +169,17 @@ bot.on('photo', async (ctx) => {
     return;
   }
 
-  // Быстрый путь: фото с подписью = инв. номер
   if ((!session || !session.action) && looksLikeInventoryNumber(caption)) {
     const ok = await savePhoto(caption, fileId);
     if (!ok) {
       await ctx.reply(
-        `Номер ${caption} не найден. Сначала добавьте его через /add`,
+        `Номер ${caption} не найден.`,
+        notFoundActions(caption),
       );
       return;
     }
     const asset = await findAsset(caption);
-    await ctx.reply(`Фото сохранено для № ${caption}`);
+    await ctx.reply(`✅ Фото сохранено для № ${caption}`, mainMenu());
     await replyWithAsset(ctx, asset);
     return;
   }
@@ -154,29 +189,29 @@ bot.on('photo', async (ctx) => {
     const ok = await savePhoto(number, fileId);
     clearSession(ctx.from.id);
     if (!ok) {
-      await ctx.reply(`Номер ${number} не найден.`, menuKeyboard);
+      await ctx.reply(`Номер ${number} не найден.`, mainMenu());
       return;
     }
     const asset = await findAsset(number);
-    await ctx.reply(`Фото сохранено для № ${number}`, menuKeyboard);
+    await ctx.reply(`✅ Фото сохранено для № ${number}`, mainMenu());
     await replyWithAsset(ctx, asset);
     return;
   }
 
   if (session?.action === 'add_wait_photo') {
-    const draft = session.draft;
     const asset = await createAsset({
-      ...draft,
+      ...session.draft,
       photo_file_id: fileId,
     });
     clearSession(ctx.from.id);
-    await ctx.reply(`Создано: № ${asset.inventory_number}`, menuKeyboard);
+    await ctx.reply(`✅ Создано: № ${asset.inventory_number}`, mainMenu());
     await replyWithAsset(ctx, asset);
     return;
   }
 
   await ctx.reply(
-    'Чтобы привязать фото: /photo или отправьте фото с подписью = инвентарный номер.',
+    'Чтобы привязать фото: нажмите «🖼 Добавить фото» или отправьте фото с подписью = номер.',
+    mainMenu(),
   );
 });
 
@@ -185,11 +220,7 @@ bot.on('text', async (ctx) => {
   const session = getSession(ctx.from.id);
 
   if (text.startsWith('/')) return;
-
-  // меню уже обработано hears — сюда меню-кнопки не дойдут как обычный поиск
-  if (['🔎 Поиск', '➕ Новый номер', '🖼 Добавить фото', '❌ Отмена'].includes(text)) {
-    return;
-  }
+  if (isMenuText(text)) return;
 
   if (session?.action === 'search_wait_number') {
     clearSession(ctx.from.id);
@@ -205,10 +236,7 @@ bot.on('text', async (ctx) => {
     const asset = await findAsset(text);
     if (!asset) {
       clearSession(ctx.from.id);
-      await ctx.reply(
-        `Номер ${text} не найден. Добавьте через /add`,
-        menuKeyboard,
-      );
+      await ctx.reply(`Номер ${text} не найден.`, notFoundActions(text));
       return;
     }
     setSession(ctx.from.id, {
@@ -216,7 +244,8 @@ bot.on('text', async (ctx) => {
       inventory_number: text,
     });
     await ctx.reply(
-      `Номер ${text}: ${asset.name}\nТеперь отправьте фото (или ссылку Google Drive):\n\n/cancel — отмена`,
+      `№ ${text}: ${asset.name}\n\nОтправьте фото или ссылку Google Drive.`,
+      wizardMenu(false),
     );
     return;
   }
@@ -225,7 +254,8 @@ bot.on('text', async (ctx) => {
     const url = toDirectPhotoUrl(text);
     if (!url) {
       await ctx.reply(
-        'Пришлите фото файлом или прямую/Drive ссылку.\n/cancel — отмена',
+        'Пришлите фото или ссылку Drive.\nИли нажмите «❌ Отмена».',
+        wizardMenu(false),
       );
       return;
     }
@@ -238,8 +268,8 @@ bot.on('text', async (ctx) => {
     const asset = await findAsset(session.inventory_number);
     clearSession(ctx.from.id);
     await ctx.reply(
-      `Ссылка на фото сохранена для № ${session.inventory_number}`,
-      menuKeyboard,
+      `✅ Ссылка сохранена для № ${session.inventory_number}`,
+      mainMenu(),
     );
     await replyWithAsset(ctx, asset);
     return;
@@ -253,7 +283,8 @@ bot.on('text', async (ctx) => {
     const existing = await findAsset(text);
     if (existing) {
       await ctx.reply(
-        `Номер ${text} уже есть: ${existing.name}\nВведите другой номер или /cancel`,
+        `Номер ${text} уже есть: ${existing.name}\nВведите другой или «❌ Отмена».`,
+        wizardMenu(false),
       );
       return;
     }
@@ -261,13 +292,13 @@ bot.on('text', async (ctx) => {
       action: 'add_wait_name',
       draft: { inventory_number: text },
     });
-    await ctx.reply('Введите наименование основного средства:');
+    await ctx.reply('Введите наименование ОС:', wizardMenu(false));
     return;
   }
 
   if (session?.action === 'add_wait_name') {
     if (text.length < 2) {
-      await ctx.reply('Слишком короткое название. Введите ещё раз:');
+      await ctx.reply('Слишком короткое название. Ещё раз:');
       return;
     }
     setSession(ctx.from.id, {
@@ -275,7 +306,8 @@ bot.on('text', async (ctx) => {
       draft: { ...session.draft, name: text },
     });
     await ctx.reply(
-      'Заводской номер (или «-» чтобы пропустить):',
+      'Заводской номер:\nили нажмите «⏭ Пропустить»',
+      wizardMenu(true),
     );
     return;
   }
@@ -287,28 +319,23 @@ bot.on('text', async (ctx) => {
       draft: { ...session.draft, factory_number: factory },
     });
     await ctx.reply(
-      [
-        'Отправьте фото ОС.',
-        'Или ссылку Google Drive.',
-        'Или напишите «-» / /skip чтобы сохранить без фото.',
-      ].join('\n'),
+      'Отправьте фото или ссылку Drive.\nИли «⏭ Пропустить» без фото.',
+      wizardMenu(true),
     );
     return;
   }
 
   if (session?.action === 'add_wait_photo') {
-    if (text === '-' || text.toLowerCase() === '/skip' || text.toLowerCase() === 'skip') {
-      const asset = await createAsset(session.draft);
-      clearSession(ctx.from.id);
-      await ctx.reply(`Создано: № ${asset.inventory_number}`, menuKeyboard);
-      await replyWithAsset(ctx, asset);
+    if (text === '-') {
+      await finishAddWithoutPhoto(ctx, session.draft);
       return;
     }
 
     const url = toDirectPhotoUrl(text);
     if (!url) {
       await ctx.reply(
-        'Пришлите фото, ссылку Drive, «-» чтобы пропустить, или /cancel',
+        'Пришлите фото, ссылку Drive или «⏭ Пропустить».',
+        wizardMenu(true),
       );
       return;
     }
@@ -318,20 +345,79 @@ bot.on('text', async (ctx) => {
       photo_url: url,
     });
     clearSession(ctx.from.id);
-    await ctx.reply(`Создано: № ${asset.inventory_number}`, menuKeyboard);
+    await ctx.reply(`✅ Создано: № ${asset.inventory_number}`, mainMenu());
     await replyWithAsset(ctx, asset);
     return;
   }
 
-  // Обычный поиск без режима
   await handleSearch(ctx, text);
 });
+
+async function startSearch(ctx) {
+  setSession(ctx.from.id, { action: 'search_wait_number' });
+  await ctx.reply('Введите инвентарный номер:', wizardMenu(false));
+}
+
+async function startAdd(ctx, presetNumber) {
+  if (presetNumber) {
+    setSession(ctx.from.id, {
+      action: 'add_wait_name',
+      draft: { inventory_number: presetNumber },
+    });
+    await ctx.reply(
+      `Номер ${presetNumber}.\nВведите наименование ОС:`,
+      wizardMenu(false),
+    );
+    return;
+  }
+
+  setSession(ctx.from.id, { action: 'add_wait_number', draft: {} });
+  await ctx.reply(
+    'Добавление ОС.\nВведите новый инвентарный номер:',
+    wizardMenu(false),
+  );
+}
+
+async function startPhoto(ctx) {
+  setSession(ctx.from.id, { action: 'photo_wait_number' });
+  await ctx.reply('Введите инвентарный номер для фото:', wizardMenu(false));
+}
+
+async function handleSkip(ctx) {
+  const session = getSession(ctx.from.id);
+
+  if (session?.action === 'add_wait_factory') {
+    setSession(ctx.from.id, {
+      action: 'add_wait_photo',
+      draft: { ...session.draft, factory_number: null },
+    });
+    await ctx.reply(
+      'Отправьте фото или ссылку Drive.\nИли «⏭ Пропустить» без фото.',
+      wizardMenu(true),
+    );
+    return;
+  }
+
+  if (session?.action === 'add_wait_photo') {
+    await finishAddWithoutPhoto(ctx, session.draft);
+    return;
+  }
+
+  await ctx.reply('Сейчас нечего пропускать.', mainMenu());
+}
+
+async function finishAddWithoutPhoto(ctx, draft) {
+  const asset = await createAsset(draft);
+  clearSession(ctx.from.id);
+  await ctx.reply(`✅ Создано: № ${asset.inventory_number}`, mainMenu());
+  await replyWithAsset(ctx, asset);
+}
 
 async function handleSearch(ctx, text) {
   if (!looksLikeInventoryNumber(text)) {
     await ctx.reply(
-      'Пришлите инвентарный номер цифрами или выберите действие в меню.',
-      menuKeyboard,
+      'Пришлите инвентарный номер цифрами или выберите кнопку меню.',
+      mainMenu(),
     );
     return;
   }
@@ -339,8 +425,8 @@ async function handleSearch(ctx, text) {
   const asset = await findAsset(text);
   if (!asset) {
     await ctx.reply(
-      `По инвентарному номеру ${text} ничего не найдено.\nДобавить: /add`,
-      menuKeyboard,
+      `По номеру ${text} ничего не найдено.`,
+      notFoundActions(text),
     );
     return;
   }

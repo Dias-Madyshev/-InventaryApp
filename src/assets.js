@@ -1,4 +1,5 @@
 import { formatAssetMessage } from './format.js';
+import { assetActions } from './keyboards.js';
 
 /**
  * Отправляет карточку ОС: сначала Telegram file_id, иначе ссылка Drive/URL.
@@ -6,19 +7,18 @@ import { formatAssetMessage } from './format.js';
 export async function replyWithAsset(ctx, asset) {
   const caption = formatAssetMessage(asset);
   const photo = asset.photo_file_id || asset.photo_url;
+  const keyboard = assetActions(asset.inventory_number);
 
   if (!photo) {
-    await ctx.reply(caption);
+    await ctx.reply(caption, keyboard);
     return;
   }
 
   try {
-    await ctx.replyWithPhoto(photo, { caption });
+    await ctx.replyWithPhoto(photo, { caption, ...keyboard });
   } catch (err) {
     console.error('Не удалось отправить фото:', err.message);
-    await ctx.reply(
-      `${caption}\n\n⚠️ Фото не удалось загрузить.`,
-    );
+    await ctx.reply(`${caption}\n\n⚠️ Фото не удалось загрузить.`, keyboard);
   }
 }
 
