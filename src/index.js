@@ -482,11 +482,43 @@ async function main() {
     console.log(`HTTP healthcheck на порту ${port}`);
   });
 
+  startKeepAlive();
+
   await bot.launch();
   console.log('Telegram-бот запущен');
 
   process.once('SIGINT', () => shutdown(server));
   process.once('SIGTERM', () => shutdown(server));
+}
+
+const KEEP_ALIVE_MS = 10 * 60 * 1000;
+
+function startKeepAlive() {
+  const base = process.env.RENDER_EXTERNAL_URL || process.env.KEEP_ALIVE_URL;
+  if (!base) {
+    console.log('Keep-alive выключен: нет RENDER_EXTERNAL_URL');
+    return;
+  }
+
+  const url = `${base.replace(/\/$/, '')}/`;
+
+  const ping = async () => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      console.log(`keep-alive ${res.status}`);
+    } catch (err) {
+      console.error('keep-alive error:', err.message);
+    }
+  };
+
+  // Render Free засыпает через 15 минут без входящего HTTP.
+  // Пинг публичного URL считается входящим запросом.
+  setTimeout(() => {
+    ping();
+    setInterval(ping, KEEP_ALIVE_MS);
+  }, 60 * 1000);
+
+  console.log(`Keep-alive каждые 10 мин: ${url}`);
 }
 
 async function shutdown(server) {
